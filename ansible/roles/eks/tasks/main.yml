@@ -105,35 +105,33 @@
     state: present
 
 - name: Create EKS cluster
-  amazon.aws.eks_cluster:
-    name: "{{ cluster_name }}"
-    version: "{{ kubernetes_version }}"
-    role_arn: "arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role"
-    subnets:
-      - "{{ public_subnets.results[0].subnet.id }}"
-      - "{{ public_subnets.results[1].subnet.id }}"
-      - "{{ private_subnets.results[0].subnet.id }}"
-      - "{{ private_subnets.results[1].subnet.id }}"
-    wait: true
-    wait_timeout: 1200
-  register: cluster
+  shell: |
+    aws eks create-cluster \
+      --name {{ cluster_name }} \
+      --version {{ kubernetes_version }} \
+      --role-arn arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role \
+      --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }} \
+      --region {{ region }}
+  register: cluster_result
+  ignore_errors: true
+
+- name: Wait for EKS cluster to be active
+  shell: aws eks wait cluster-active --name {{ cluster_name }} --region {{ region }}
 
 - name: Create EKS node group
-  amazon.aws.eks_nodegroup:
-    name: "{{ node_group_name }}"
-    cluster_name: "{{ cluster_name }}"
-    role_arn: "arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-node-role"
-    subnets:
-      - "{{ private_subnets.results[0].subnet.id }}"
-      - "{{ private_subnets.results[1].subnet.id }}"
-    instance_types:
-      - "{{ node_instance_type }}"
-    scaling_config:
-      desired_size: "{{ node_desired_capacity }}"
-      max_size: "{{ node_max_size }}"
-      min_size: "{{ node_min_size }}"
-    wait: true
-    wait_timeout: 1200
+  shell: |
+    aws eks create-nodegroup \
+      --cluster-name {{ cluster_name }} \
+      --nodegroup-name {{ node_group_name }} \
+      --node-role arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-node-role \
+      --subnets {{ private_subnets.results[0].subnet.id }} {{ private_subnets.results[1].subnet.id }} \
+      --instance-types {{ node_instance_type }} \
+      --scaling-config minSize={{ node_min_size }},maxSize={{ node_max_size }},desiredSize={{ node_desired_capacity }} \
+      --region {{ region }}
+  ignore_errors: true
+
+- name: Wait for node group to be active
+  shell: aws eks wait nodegroup-active --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }}
 
 - name: Generate kubeconfig
   shell: |
@@ -141,10 +139,14 @@
   environment:
     AWS_DEFAULT_REGION: "{{ region }}"
 
+- name: Get cluster endpoint
+  shell: aws eks describe-cluster --name {{ cluster_name }} --region {{ region }} --query 'cluster.endpoint' --output text
+  register: cluster_endpoint
+
 - name: Display cluster information
   debug:
     msg:
       - "EKS Cluster Name: {{ cluster_name }}"
       - "Region: {{ region }}"
-      - "Endpoint: {{ cluster.cluster.endpoint }}"
+      - "Endpoint: {{ cluster_endpoint.stdout }}"
       - "Kubeconfig updated at ~/.kube/config"
