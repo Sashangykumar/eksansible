@@ -58,7 +58,7 @@ jobs:
         helm upgrade --install prometheus prometheus-community/prometheus \
           --namespace monitoring \
           --set server.service.type=LoadBalancer \
-          --wait
+          --timeout 10m
 
     - name: Install Grafana
       run: |
@@ -66,15 +66,25 @@ jobs:
           --namespace monitoring \
           --set service.type=LoadBalancer \
           --set adminPassword=admin123 \
-          --wait
+          --timeout 10m
 
+    - name: Wait for services to be ready
+      run: |
+        echo "Waiting for services to be ready..."
+        sleep 120
+        
     - name: Get service URLs
       run: |
-        echo "Waiting for LoadBalancer IPs..."
-        sleep 60
         echo "=== Apache Service ==="
-        kubectl get svc apache-service -o wide
+        kubectl get svc apache-service -o wide || echo "Apache service not ready"
+        echo ""
         echo "=== Prometheus Service ==="
-        kubectl get svc prometheus-server -n monitoring -o wide
+        kubectl get svc prometheus-server -n monitoring -o wide || echo "Prometheus service not ready"
+        echo ""
         echo "=== Grafana Service ==="
-        kubectl get svc grafana -n monitoring -o wide
+        kubectl get svc grafana -n monitoring -o wide || echo "Grafana service not ready"
+        echo ""
+        echo "=== Service URLs ==="
+        echo "Apache: http://$(kubectl get svc apache-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo 'pending')"
+        echo "Prometheus: http://$(kubectl get svc prometheus-server -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo 'pending')"
+        echo "Grafana: http://$(kubectl get svc grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo 'pending') (admin/admin123)"
