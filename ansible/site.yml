@@ -3,5 +3,8 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  collections:
+    - amazon.aws
+    - kubernetes.core
   roles:
     - eks
