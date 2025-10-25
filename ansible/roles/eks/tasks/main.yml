@@ -126,7 +126,11 @@
     - "'ResourceInUseException' not in cluster_create_result.stderr"
 
 - name: Wait for EKS cluster to be active
-  shell: aws eks wait cluster-active --name {{ cluster_name }} --region {{ region }}
+  shell: |
+    sleep 60
+    aws eks wait cluster-active --name {{ cluster_name }} --region {{ region }}
+  retries: 3
+  delay: 30
 
 - name: Create EKS node group
   shell: |
