@@ -109,7 +109,7 @@
   register: slr_result
   failed_when: 
     - slr_result.rc != 0
-    - "'already exists' not in slr_result.stderr"
+    - "'has been taken' not in slr_result.stderr"
 
 - name: Wait for IAM role propagation
   pause:
