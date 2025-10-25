@@ -104,13 +104,16 @@
       - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
     state: present
 
-- name: Debug cluster creation command
-  debug:
-    msg: |
-      Creating cluster with:
-      Name: {{ cluster_name }}
-      Role: arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role
-      Subnets: {{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }}
+- name: Create EKS service-linked role
+  shell: aws iam create-service-linked-role --aws-service-name eks.amazonaws.com
+  register: slr_result
+  failed_when: 
+    - slr_result.rc != 0
+    - "'already exists' not in slr_result.stderr"
+
+- name: Wait for IAM role propagation
+  pause:
+    seconds: 90
 
 - name: Create EKS cluster
   shell: |
@@ -120,17 +123,19 @@
       --role-arn arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role \
       --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }} \
       --region {{ region }}
-  register: cluster_create_result
+  register: cluster_result
   failed_when:
-    - cluster_create_result.rc != 0
-    - "'ResourceInUseException' not in cluster_create_result.stderr"
+    - cluster_result.rc != 0
+    - "'ResourceInUseException' not in cluster_result.stderr"
+
+- name: Wait for cluster to be available in API
+  pause:
+    seconds: 120
 
 - name: Wait for EKS cluster to be active
-  shell: |
-    sleep 60
-    aws eks wait cluster-active --name {{ cluster_name }} --region {{ region }}
-  retries: 3
-  delay: 30
+  shell: aws eks wait cluster-active --name {{ cluster_name }} --region {{ region }}
+  retries: 5
+  delay: 60
 
 - name: Create EKS node group
   shell: |
@@ -142,50 +147,27 @@
       --instance-types {{ node_instance_type }} \
       --scaling-config minSize={{ node_min_size }},maxSize={{ node_max_size }},desiredSize={{ node_desired_capacity }} \
       --region {{ region }}
-  register: nodegroup_create_result
-  ignore_errors: true
-
-- name: Fail if nodegroup creation failed with unexpected error
-  fail:
-    msg: "Nodegroup creation failed: {{ nodegroup_create_result.stderr }}"
-  when: 
-    - nodegroup_create_result.rc != 0
-    - "'already exists' not in nodegroup_create_result.stderr"
-    - "'AlreadyExistsException' not in nodegroup_create_result.stderr"
+  register: nodegroup_result
+  failed_when:
+    - nodegroup_result.rc != 0
+    - "'ResourceInUseException' not in nodegroup_result.stderr"
 
 - name: Wait for node group to be active
-  shell: |
-    for i in {1..40}; do
-      if aws eks describe-nodegroup --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }} >/dev/null 2>&1; then
-        STATUS=$(aws eks describe-nodegroup --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }} --query 'nodegroup.status' --output text)
-        echo "Nodegroup status: $STATUS"
-        if [ "$STATUS" = "ACTIVE" ]; then
-          echo "Nodegroup is active"
-          exit 0
-        fi
-      else
-        echo "Nodegroup not found yet, waiting..."
-      fi
-      sleep 30
-    done
-    echo "Timeout waiting for nodegroup"
-    exit 1
+  shell: aws eks wait nodegroup-active --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }}
+  retries: 5
+  delay: 60
 
 - name: Generate kubeconfig
-  shell: |
-    aws eks update-kubeconfig --region {{ region }} --name {{ cluster_name }}
-  environment:
-    AWS_DEFAULT_REGION: "{{ region }}"
+  shell: aws eks update-kubeconfig --region {{ region }} --name {{ cluster_name }}
 
 - name: Get cluster information
-  shell: aws eks describe-cluster --name {{ cluster_name }} --region {{ region }}
-  register: cluster_info_raw
+  shell: aws eks describe-cluster --name {{ cluster_name }} --region {{ region }} --query 'cluster.{arn:arn,endpoint:endpoint}' --output json
+  register: cluster_info
 
 - name: Display cluster information
   debug:
     msg:
-      - "EKS Cluster Name: {{ cluster_name }}"
+      - "EKS Cluster: {{ cluster_name }}"
       - "Region: {{ region }}"
-      - "Cluster ARN: {{ (cluster_info_raw.stdout | from_json).cluster.arn }}"
-      - "Endpoint: {{ (cluster_info_raw.stdout | from_json).cluster.endpoint }}"
-      - "Kubeconfig updated at ~/.kube/config"
+      - "Status: Active"
+      - "Cluster Info: {{ cluster_info.stdout | from_json }}"
