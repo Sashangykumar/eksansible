@@ -113,10 +113,10 @@
       --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }} \
       --region {{ region }}
   register: cluster_result
-  ignore_errors: true
 
 - name: Wait for EKS cluster to be active
   shell: aws eks wait cluster-active --name {{ cluster_name }} --region {{ region }}
+  when: cluster_result.rc == 0
 
 - name: Create EKS node group
   shell: |
@@ -128,10 +128,12 @@
       --instance-types {{ node_instance_type }} \
       --scaling-config minSize={{ node_min_size }},maxSize={{ node_max_size }},desiredSize={{ node_desired_capacity }} \
       --region {{ region }}
-  ignore_errors: true
+  register: nodegroup_result
+  when: cluster_result.rc == 0
 
 - name: Wait for node group to be active
   shell: aws eks wait nodegroup-active --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }}
+  when: cluster_result.rc == 0 and nodegroup_result.rc == 0
 
 - name: Generate kubeconfig
   shell: |
