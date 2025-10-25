@@ -120,7 +120,14 @@
   register: permission_test
 
 - name: Create EKS cluster
-  shell: 'aws eks create-cluster --name {{ cluster_name }} --version {{ kubernetes_version }} --role-arn arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }} --region {{ region }} --output json'
+  command: >
+    aws eks create-cluster
+    --name {{ cluster_name }}
+    --version {{ kubernetes_version }}
+    --role-arn arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role
+    --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }}
+    --region {{ region }}
+    --output json
   register: cluster_result
 
 - name: Check if cluster creation succeeded
