@@ -106,61 +106,59 @@
 
 - name: Create EKS cluster
   shell: |
-    set -e
-    if ! aws eks describe-cluster --name {{ cluster_name }} --region {{ region }} >/dev/null 2>&1; then
-      echo "Creating cluster..."
-      aws eks create-cluster \
-        --name {{ cluster_name }} \
-        --version {{ kubernetes_version }} \
-        --role-arn arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role \
-        --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }} \
-        --region {{ region }}
-      if [ $? -eq 0 ]; then
-        echo "CREATED"
-      else
-        echo "FAILED"
-        exit 1
-      fi
-    else
-      echo "EXISTS"
-    fi
+    aws eks create-cluster \
+      --name {{ cluster_name }} \
+      --version {{ kubernetes_version }} \
+      --role-arn arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role \
+      --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }} \
+      --region {{ region }} 2>/dev/null || echo "Already exists or created"
   register: cluster_result
 
-- name: Debug cluster creation result
-  debug:
-    var: cluster_result
-
 - name: Wait for EKS cluster to be active
-  shell: aws eks wait cluster-active --name {{ cluster_name }} --region {{ region }}
-  when: cluster_result.stdout_lines | last == "CREATED" or cluster_result.stdout_lines | last == "EXISTS"
+  shell: |
+    for i in {1..40}; do
+      STATUS=$(aws eks describe-cluster --name {{ cluster_name }} --region {{ region }} --query 'cluster.status' --output text 2>/dev/null || echo "NOT_FOUND")
+      if [ "$STATUS" = "ACTIVE" ]; then
+        echo "Cluster is active"
+        exit 0
+      elif [ "$STATUS" = "NOT_FOUND" ]; then
+        echo "Cluster not found, waiting..."
+      else
+        echo "Cluster status: $STATUS, waiting..."
+      fi
+      sleep 30
+    done
+    echo "Timeout waiting for cluster"
+    exit 1
 
 - name: Create EKS node group
   shell: |
-    set -e
-    if aws eks describe-cluster --name {{ cluster_name }} --region {{ region }} >/dev/null 2>&1; then
-      if ! aws eks describe-nodegroup --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }} >/dev/null 2>&1; then
-        echo "Creating nodegroup..."
-        aws eks create-nodegroup \
-          --cluster-name {{ cluster_name }} \
-          --nodegroup-name {{ node_group_name }} \
-          --node-role arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-node-role \
-          --subnets {{ private_subnets.results[0].subnet.id }} {{ private_subnets.results[1].subnet.id }} \
-          --instance-types {{ node_instance_type }} \
-          --scaling-config minSize={{ node_min_size }},maxSize={{ node_max_size }},desiredSize={{ node_desired_capacity }} \
-          --region {{ region }}
-        echo "CREATED"
-      else
-        echo "EXISTS"
-      fi
-    else
-      echo "CLUSTER_NOT_FOUND"
-      exit 1
-    fi
+    aws eks create-nodegroup \
+      --cluster-name {{ cluster_name }} \
+      --nodegroup-name {{ node_group_name }} \
+      --node-role arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-node-role \
+      --subnets {{ private_subnets.results[0].subnet.id }} {{ private_subnets.results[1].subnet.id }} \
+      --instance-types {{ node_instance_type }} \
+      --scaling-config minSize={{ node_min_size }},maxSize={{ node_max_size }},desiredSize={{ node_desired_capacity }} \
+      --region {{ region }} 2>/dev/null || echo "Already exists or created"
   register: nodegroup_result
 
 - name: Wait for node group to be active
-  shell: aws eks wait nodegroup-active --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }}
-  when: nodegroup_result.stdout_lines | last == "CREATED" or nodegroup_result.stdout_lines | last == "EXISTS"
+  shell: |
+    for i in {1..40}; do
+      STATUS=$(aws eks describe-nodegroup --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }} --query 'nodegroup.status' --output text 2>/dev/null || echo "NOT_FOUND")
+      if [ "$STATUS" = "ACTIVE" ]; then
+        echo "Nodegroup is active"
+        exit 0
+      elif [ "$STATUS" = "NOT_FOUND" ]; then
+        echo "Nodegroup not found, waiting..."
+      else
+        echo "Nodegroup status: $STATUS, waiting..."
+      fi
+      sleep 30
+    done
+    echo "Timeout waiting for nodegroup"
+    exit 1
 
 - name: Generate kubeconfig
   shell: |
