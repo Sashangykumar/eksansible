@@ -1,0 +1,47 @@
+name: Infrastructure Pipeline
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ansible/**'
+    branches:
+      - main
+
+jobs:
+  provision-eks:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
+
+    - name: Install Ansible and dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y python3-pip
+        pip3 install ansible boto3 botocore
+        ansible-galaxy collection install amazon.aws community.aws
+
+    - name: Get AWS Account ID
+      run: |
+        echo "AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_ENV
+
+    - name: Run Ansible playbook
+      run: |
+        cd ansible
+        ansible-playbook -i inventory/hosts.ini site.yml -e ansible_account_id=${{ env.AWS_ACCOUNT_ID }}
+
+    - name: Upload kubeconfig
+      uses: actions/upload-artifact@v4
+      with:
+        name: kubeconfig
+        path: ~/.kube/config
+        retention-days: 1
