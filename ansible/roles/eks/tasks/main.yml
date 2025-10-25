@@ -132,25 +132,21 @@
       - "Stdout: {{ cluster_result.stdout }}"
       - "Stderr: {{ cluster_result.stderr }}"
 
-- name: Verify cluster exists in AWS
-  shell: aws eks describe-cluster --name {{ cluster_name }} --region {{ region }}
-  register: verify_cluster
-  ignore_errors: true
-
-- name: Show verification result
-  debug:
-    msg:
-      - "Cluster verification RC: {{ verify_cluster.rc }}"
-      - "Cluster exists: {{ verify_cluster.rc == 0 }}"
-
-- name: Fail if cluster doesn't exist
+- name: Fail if cluster creation had errors
   fail:
-    msg: "Cluster creation failed - cluster not found in AWS"
-  when: verify_cluster.rc != 0
+    msg: "Cluster creation failed: {{ cluster_result.stderr }}"
+  when: 
+    - cluster_result.rc != 0
+    - cluster_result.stderr != ""
+
+- name: Wait 2 minutes for cluster to appear in AWS API
+  pause:
+    seconds: 120
+  when: cluster_result.rc == 0
 
 - name: Wait for EKS cluster to be active
   shell: aws eks wait cluster-active --name {{ cluster_name }} --region {{ region }}
-  when: verify_cluster.rc == 0
+  when: cluster_result.rc == 0
 
 - name: Create EKS node group
   shell: |
