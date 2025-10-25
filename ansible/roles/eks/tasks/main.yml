@@ -115,6 +115,10 @@
   pause:
     seconds: 90
 
+- name: Test AWS permissions
+  shell: aws eks list-clusters --region {{ region }}
+  register: permission_test
+
 - name: Create EKS cluster
   shell: |
     aws eks create-cluster \
@@ -122,15 +126,24 @@
       --version {{ kubernetes_version }} \
       --role-arn arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role \
       --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }} \
-      --region {{ region }}
+      --region {{ region }} \
+      --output json
   register: cluster_result
 
 - name: Check if cluster creation succeeded
   debug:
     msg:
+      - "Permission test: {{ permission_test.stdout }}"
       - "Return Code: {{ cluster_result.rc }}"
       - "Stdout: {{ cluster_result.stdout }}"
       - "Stderr: {{ cluster_result.stderr }}"
+
+- name: Verify cluster was actually created
+  fail:
+    msg: "Cluster creation returned success but no cluster data - check AWS permissions"
+  when: 
+    - cluster_result.rc == 0
+    - "'cluster' not in cluster_result.stdout"
 
 - name: Fail if cluster creation had errors
   fail:
