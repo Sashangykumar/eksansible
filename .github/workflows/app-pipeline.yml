@@ -13,7 +13,7 @@ on:
       - main
 
 jobs:
-  deploy-applications:
+  deploy-apps:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' || github.event_name == 'push' }}
     
@@ -35,27 +35,21 @@ jobs:
         path: ~/.kube/
       continue-on-error: true
 
-    - name: Setup kubeconfig (fallback)
-      run: |
-        if [ ! -f ~/.kube/config ]; then
-          mkdir -p ~/.kube
-          aws eks update-kubeconfig --region us-west-2 --name devops-eks-cluster
-        fi
-
-    - name: Install kubectl and helm
+    - name: Setup kubectl
       run: |
         curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-        sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        chmod +x kubectl
+        sudo mv kubectl /usr/local/bin/
+        aws eks update-kubeconfig --region us-west-2 --name devops-eks-cluster
 
-    - name: Deploy Apache application
+    - name: Deploy Apache
       run: |
         kubectl apply -f k8s/apache/
-        kubectl rollout status deployment/apache-deployment --timeout=300s
+        kubectl rollout status deployment/apache-deployment
 
-    - name: Setup monitoring namespace
+    - name: Install Helm
       run: |
-        kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
     - name: Add Helm repositories
       run: |
@@ -63,37 +57,31 @@ jobs:
         helm repo add grafana https://grafana.github.io/helm-charts
         helm repo update
 
+    - name: Create monitoring namespace
+      run: kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+
     - name: Install Prometheus
       run: |
         helm upgrade --install prometheus prometheus-community/prometheus \
           --namespace monitoring \
-          --values k8s/monitoring/prometheus-values.yaml \
-          --wait --timeout=10m
+          --set server.service.type=LoadBalancer \
+          --wait
 
     - name: Install Grafana
       run: |
         helm upgrade --install grafana grafana/grafana \
           --namespace monitoring \
-          --values k8s/monitoring/grafana-values.yaml \
-          --wait --timeout=10m
+          --set service.type=LoadBalancer \
+          --set adminPassword=admin123 \
+          --wait
 
     - name: Get service URLs
       run: |
         echo "Waiting for LoadBalancer IPs..."
         sleep 60
-        
         echo "=== Apache Service ==="
         kubectl get svc apache-service -o wide
-        APACHE_IP=$(kubectl get svc apache-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || kubectl get svc apache-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-        echo "Apache URL: http://$APACHE_IP"
-        
         echo "=== Prometheus Service ==="
         kubectl get svc prometheus-server -n monitoring -o wide
-        PROMETHEUS_IP=$(kubectl get svc prometheus-server -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || kubectl get svc prometheus-server -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-        echo "Prometheus URL: http://$PROMETHEUS_IP"
-        
         echo "=== Grafana Service ==="
         kubectl get svc grafana -n monitoring -o wide
-        GRAFANA_IP=$(kubectl get svc grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || kubectl get svc grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-        echo "Grafana URL: http://$GRAFANA_IP"
-        echo "Grafana Credentials: admin / admin123"

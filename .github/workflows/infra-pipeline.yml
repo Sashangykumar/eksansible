@@ -33,13 +33,11 @@ jobs:
     - name: Install Ansible collections
       run: |
         ansible-galaxy collection install amazon.aws --force
-        ansible-galaxy collection install kubernetes.core --force
         
     - name: Verify installation
       run: |
         ansible --version
         ansible-galaxy collection list
-        python3 -c "import boto3; print('boto3 version:', boto3.__version__)"
 
     - name: Get AWS Account ID
       run: |

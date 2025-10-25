@@ -11,18 +11,10 @@ Complete DevOps pipeline for provisioning AWS EKS cluster and deploying applicat
 
 ## Prerequisites
 
-1. AWS Account with appropriate permissions
+1. AWS Account with AdministratorAccess permissions
 2. GitHub repository with the following secrets:
    - `AWS_ACCESS_KEY_ID`
    - `AWS_SECRET_ACCESS_KEY`
-
-## Required AWS Permissions
-
-Your AWS user/role needs these permissions:
-- EKS full access
-- EC2 full access
-- IAM role creation and management
-- VPC management
 
 ## Quick Start
 
@@ -84,7 +76,6 @@ After successful deployment, check the GitHub Actions logs for service URLs:
 - **Username**: `admin`
 - **Password**: `admin123`
 - Pre-configured with Prometheus datasource
-- Includes Kubernetes cluster monitoring dashboard
 
 ## Manual Commands
 
@@ -93,7 +84,7 @@ If you want to run locally:
 ### Deploy Infrastructure
 ```bash
 cd ansible
-ansible-playbook -i inventory/hosts.ini site.yml
+ansible-playbook -i inventory/hosts.ini site.yml -e ansible_account_id=YOUR_ACCOUNT_ID
 ```
 
 ### Deploy Applications
@@ -110,8 +101,8 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 helm repo add grafana https://grafana.github.io/helm-charts
 helm repo update
 
-helm install prometheus prometheus-community/prometheus -n monitoring -f k8s/monitoring/prometheus-values.yaml
-helm install grafana grafana/grafana -n monitoring -f k8s/monitoring/grafana-values.yaml
+helm install prometheus prometheus-community/prometheus -n monitoring --set server.service.type=LoadBalancer
+helm install grafana grafana/grafana -n monitoring --set service.type=LoadBalancer --set adminPassword=admin123
 ```
 
 ### Get Service URLs
@@ -137,23 +128,6 @@ aws eks delete-nodegroup --cluster-name devops-eks-cluster --nodegroup-name work
 aws eks delete-cluster --name devops-eks-cluster
 ```
 
-## Troubleshooting
-
-### Pipeline Failures
-- Check AWS credentials are correctly set in GitHub Secrets
-- Verify AWS permissions for EKS, EC2, IAM, VPC operations
-- Check CloudFormation events in AWS Console for detailed error messages
-
-### Service Access Issues
-- LoadBalancer services may take 2-3 minutes to get external IPs
-- Check security groups allow inbound traffic on required ports
-- Verify nodes are in Ready state: `kubectl get nodes`
-
-### Monitoring Issues
-- Ensure Prometheus is running: `kubectl get pods -n monitoring`
-- Check Grafana datasource configuration in the UI
-- Verify Prometheus can scrape metrics: check Targets page
-
 ## File Structure
 
 ```
@@ -162,16 +136,23 @@ aws eks delete-cluster --name devops-eks-cluster
 │   ├── site.yml                    # Main playbook
 │   ├── group_vars/all.yml          # Configuration variables
 │   ├── inventory/hosts.ini         # Inventory file
+│   ├── requirements.yml            # Ansible collections
 │   └── roles/eks/tasks/main.yml    # EKS provisioning tasks
 ├── k8s/
-│   ├── apache/
-│   │   ├── deployment.yaml         # Apache deployment
-│   │   └── service.yaml           # Apache LoadBalancer service
-│   └── monitoring/
-│       ├── prometheus-values.yaml  # Prometheus Helm values
-│       └── grafana-values.yaml    # Grafana Helm values
+│   └── apache/
+│       ├── deployment.yaml         # Apache deployment
+│       └── service.yaml           # Apache LoadBalancer service
 ├── .github/workflows/
 │   ├── infra-pipeline.yml         # Infrastructure CI/CD
 │   └── app-pipeline.yml           # Application CI/CD
 └── README.md
 ```
+
+## Key Features
+
+- **Clean, minimal code** - No debugging steps or complex logic
+- **Error handling** - Handles duplicate resources gracefully
+- **High availability** - Multi-AZ deployment
+- **Security** - Worker nodes in private subnets
+- **Monitoring** - Built-in Prometheus and Grafana
+- **Automation** - Complete CI/CD pipeline
