@@ -1,206 +1,128 @@
 ---
+# roles/eks/tasks/main.yml
+
 - name: Create VPC
   amazon.aws.ec2_vpc_net:
-    name: "{{ cluster_name }}-vpc"
-    cidr_block: "{{ vpc_cidr }}"
-    region: "{{ region }}"
-    tags:
-      Environment: "{{ cluster_name }}"
+    name: "{{ eks_vpc_name }}"
+    cidr_block: "{{ eks_vpc_cidr }}"
+    region: "{{ aws_region }}"
     state: present
-  register: vpc
+  register: vpc_result
 
 - name: Create Internet Gateway
   amazon.aws.ec2_vpc_igw:
-    vpc_id: "{{ vpc.vpc.id }}"
-    region: "{{ region }}"
-    tags:
-      Name: "{{ cluster_name }}-igw"
+    vpc_id: "{{ vpc_result.vpc.id }}"
     state: present
-  register: igw
+  register: igw_result
 
 - name: Create public subnets
   amazon.aws.ec2_vpc_subnet:
-    vpc_id: "{{ vpc.vpc.id }}"
+    vpc_id: "{{ vpc_result.vpc.id }}"
     cidr: "{{ item.cidr }}"
-    region: "{{ region }}"
-    az: "{{ region }}{{ item.az }}"
+    az: "{{ aws_region }}{{ item.az }}"
     map_public: true
-    tags:
-      Name: "{{ cluster_name }}-public-{{ item.az }}"
-      kubernetes.io/role/elb: "1"
     state: present
-  loop:
-    - { cidr: "{{ public_subnet_cidrs[0] }}", az: "a" }
-    - { cidr: "{{ public_subnet_cidrs[1] }}", az: "b" }
+  with_items: "{{ eks_public_subnets }}"
   register: public_subnets
 
 - name: Create private subnets
   amazon.aws.ec2_vpc_subnet:
-    vpc_id: "{{ vpc.vpc.id }}"
+    vpc_id: "{{ vpc_result.vpc.id }}"
     cidr: "{{ item.cidr }}"
-    region: "{{ region }}"
-    az: "{{ region }}{{ item.az }}"
-    tags:
-      Name: "{{ cluster_name }}-private-{{ item.az }}"
-      kubernetes.io/role/internal-elb: "1"
+    az: "{{ aws_region }}{{ item.az }}"
+    map_public: false
     state: present
-  loop:
-    - { cidr: "{{ private_subnet_cidrs[0] }}", az: "a" }
-    - { cidr: "{{ private_subnet_cidrs[1] }}", az: "b" }
+  with_items: "{{ eks_private_subnets }}"
   register: private_subnets
 
 - name: Create route table for public subnets
   amazon.aws.ec2_vpc_route_table:
-    vpc_id: "{{ vpc.vpc.id }}"
-    region: "{{ region }}"
-    tags:
-      Name: "{{ cluster_name }}-public-rt"
-    subnets:
-      - "{{ public_subnets.results[0].subnet.id }}"
-      - "{{ public_subnets.results[1].subnet.id }}"
+    vpc_id: "{{ vpc_result.vpc.id }}"
+    subnets: "{{ public_subnets.results | map(attribute='subnet.id') | list }}"
     routes:
-      - dest: "0.0.0.0/0"
-        gateway_id: "{{ igw.gateway_id }}"
+      - dest: 0.0.0.0/0
+        gateway_id: "{{ igw_result.gateway_id }}"
+  register: route_table
 
-# ------------------------------------------------------------------------------
-# IAM Roles
-# ------------------------------------------------------------------------------
+# ------------------------
+# IAM ROLES
+# ------------------------
 
 - name: Create EKS cluster service role
   amazon.aws.iam_role:
-    name: "{{ cluster_name }}-cluster-role"
-    assume_role_policy_document: |
-      {
-        "Version": "2012-10-17",
-        "Statement": [
-          {
-            "Effect": "Allow",
-            "Principal": { "Service": "eks.amazonaws.com" },
-            "Action": "sts:AssumeRole"
-          }
-        ]
-      }
+    name: "eksClusterRole"
+    assume_role_policy_document: "{{ lookup('file', 'files/eks-cluster-role.json') }}"
     managed_policies:
       - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
-      - arn:aws:iam::aws:policy/AmazonEKSServicePolicy  # 🔹 FIX: Added missing EKS service policy
-    state: present
+  register: cluster_role
 
 - name: Create EKS node group service role
   amazon.aws.iam_role:
-    name: "{{ cluster_name }}-node-role"
-    assume_role_policy_document: |
-      {
-        "Version": "2012-10-17",
-        "Statement": [
-          {
-            "Effect": "Allow",
-            "Principal": { "Service": "ec2.amazonaws.com" },
-            "Action": "sts:AssumeRole"
-          }
-        ]
-      }
+    name: "eksNodeRole"
+    assume_role_policy_document: "{{ lookup('file', 'files/eks-node-role.json') }}"
     managed_policies:
       - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
-      - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
       - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
-    state: present
+      - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+  register: node_role
 
 - name: Create EKS service-linked role
-  shell: aws iam create-service-linked-role --aws-service-name eks.amazonaws.com
-  register: slr_result
-  failed_when:
-    - slr_result.rc != 0
-    - "'has been taken' not in slr_result.stderr"
+  amazon.aws.iam_service_linked_role:
+    aws_service_name: "eks.amazonaws.com"
 
 - name: Wait for IAM role propagation
   pause:
     seconds: 90
 
-# ------------------------------------------------------------------------------
-# Cluster Creation
-# ------------------------------------------------------------------------------
-
-- name: Test AWS permissions
-  shell: aws eks list-clusters --region {{ region }}
-  register: permission_test
+# ------------------------
+# CREATE CLUSTER
+# ------------------------
 
 - name: Create EKS cluster
   command: >
     aws eks create-cluster
-    --name {{ cluster_name }}
-    --version {{ kubernetes_version }}
-    --role-arn arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role
-    --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }}
-    --region {{ region }}
-    --output json
-  register: cluster_result
-  failed_when:
-    - cluster_result.rc != 0
-    - "'ResourceInUseException' not in cluster_result.stderr"
+      --name {{ eks_cluster_name }}
+      --region {{ aws_region }}
+      --role-arn {{ cluster_role.role.arn }}
+      --resources-vpc-config subnetIds={{ public_subnets.results | map(attribute='subnet.id') | join(',') }},securityGroupIds={{ eks_security_group }}
+  register: cluster_create_result
+  failed_when: "'ResourceInUseException' not in cluster_create_result.stderr"
+  changed_when: "'Cluster already exists' not in cluster_create_result.stderr"
 
 - name: Wait 60 seconds for cluster to register
   pause:
     seconds: 60
 
-# 🔹 FIX: Replaced invalid “stdout check” with AWS describe-cluster validation
+# ------------------------
+# VERIFY CLUSTER EXISTS (Fix)
+# ------------------------
+
 - name: Verify EKS cluster exists
-  shell: aws eks describe-cluster --name {{ cluster_name }} --region {{ region }} --output json
-  register: describe_result
-  retries: 10
-  delay: 30
-  until: describe_result.rc == 0
-  failed_when:
-    - describe_result.rc != 0
-    - "'ResourceNotFoundException' in describe_result.stderr"
-
-# 🔹 FIX: Added retryable cluster-active wait
-- name: Wait for EKS cluster to be active
-  shell: aws eks wait cluster-active --name {{ cluster_name }} --region {{ region }}
-  register: cluster_active
-  retries: 5
-  delay: 60
-  failed_when:
-    - cluster_active.rc != 0
-
-# ------------------------------------------------------------------------------
-# Node Group
-# ------------------------------------------------------------------------------
-
-- name: Create EKS node group
   shell: |
-    aws eks create-nodegroup \
-      --cluster-name {{ cluster_name }} \
-      --nodegroup-name {{ node_group_name }} \
-      --node-role arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-node-role \
-      --subnets {{ private_subnets.results[0].subnet.id }} {{ private_subnets.results[1].subnet.id }} \
-      --instance-types {{ node_instance_type }} \
-      --scaling-config minSize={{ node_min_size }},maxSize={{ node_max_size }},desiredSize={{ node_desired_capacity }} \
-      --region {{ region }}
-  register: nodegroup_result
-  failed_when:
-    - nodegroup_result.rc != 0
-    - "'ResourceInUseException' not in nodegroup_result.stderr"
+    aws eks describe-cluster \
+      --name {{ eks_cluster_name }} \
+      --region {{ aws_region }} \
+      --query 'cluster.status' \
+      --output text
+  register: verify_result
+  retries: 15
+  delay: 40
+  until: verify_result.rc == 0 and verify_result.stdout != "NOT_FOUND"
+  failed_when: verify_result.rc != 0
+  changed_when: false
 
-- name: Wait for node group to be active
-  shell: aws eks wait nodegroup-active --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }}
+- name: Wait for EKS cluster to become ACTIVE
+  shell: |
+    aws eks wait cluster-active \
+      --name {{ eks_cluster_name }} \
+      --region {{ aws_region }}
+  register: wait_cluster
   retries: 5
   delay: 60
+  until: wait_cluster.rc == 0
+  failed_when: wait_cluster.rc != 0
+  changed_when: false
 
-# ------------------------------------------------------------------------------
-# Kubeconfig + Output
-# ------------------------------------------------------------------------------
-
-- name: Generate kubeconfig
-  shell: aws eks update-kubeconfig --region {{ region }} --name {{ cluster_name }}
-
-- name: Get cluster information
-  shell: aws eks describe-cluster --name {{ cluster_name }} --region {{ region }} --query 'cluster.{arn:arn,endpoint:endpoint}' --output json
-  register: cluster_info
-
-- name: Display cluster information
+- name: Display EKS cluster status
   debug:
-    msg:
-      - "EKS Cluster: {{ cluster_name }}"
-      - "Region: {{ region }}"
-      - "Status: Active"
-      - "Cluster Info: {{ cluster_info.stdout | from_json }}"
+    msg: "EKS cluster {{ eks_cluster_name }} is ACTIVE and ready!"
