@@ -127,7 +127,7 @@
       --role-arn arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role \
       --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }} \
       --region {{ region }} \
-      --output json
+      --output json 2>&1
   register: cluster_result
 
 - name: Check if cluster creation succeeded
