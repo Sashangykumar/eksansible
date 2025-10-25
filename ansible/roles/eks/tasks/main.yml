@@ -104,50 +104,51 @@
       - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
     state: present
 
-- name: Create EKS service-linked role
-  shell: aws iam create-service-linked-role --aws-service-name eks.amazonaws.com
-  register: slr_result
-  failed_when: 
-    - slr_result.rc != 0
-    - "'has been taken' not in slr_result.stderr"
-
 - name: Wait for IAM role propagation
   pause:
-    seconds: 60
+    seconds: 30
 
-- name: Create EKS cluster
-  shell: |
-    aws eks create-cluster \
-      --name {{ cluster_name }} \
-      --version {{ kubernetes_version }} \
-      --role-arn arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role \
-      --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }} \
-      --region {{ region }}
-  register: cluster_result
-  failed_when:
-    - cluster_result.rc != 0
-    - "'ResourceInUseException' not in cluster_result.stderr"
-
-- name: Wait for EKS cluster to be active
-  shell: aws eks wait cluster-active --name {{ cluster_name }} --region {{ region }}
-
-- name: Create EKS node group
-  shell: |
-    aws eks create-nodegroup \
-      --cluster-name {{ cluster_name }} \
-      --nodegroup-name {{ node_group_name }} \
-      --node-role arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-node-role \
-      --subnets {{ private_subnets.results[0].subnet.id }} {{ private_subnets.results[1].subnet.id }} \
-      --instance-types {{ node_instance_type }} \
-      --scaling-config minSize={{ node_min_size }},maxSize={{ node_max_size }},desiredSize={{ node_desired_capacity }} \
-      --region {{ region }}
-  register: nodegroup_result
-  failed_when:
-    - nodegroup_result.rc != 0
-    - "'ResourceInUseException' not in nodegroup_result.stderr"
-
-- name: Wait for node group to be active
-  shell: aws eks wait nodegroup-active --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }}
+- name: Create EKS cluster using CloudFormation
+  amazon.aws.cloudformation:
+    stack_name: "{{ cluster_name }}-stack"
+    state: present
+    region: "{{ region }}"
+    template_body: |
+      AWSTemplateFormatVersion: '2010-09-09'
+      Resources:
+        EKSCluster:
+          Type: AWS::EKS::Cluster
+          Properties:
+            Name: {{ cluster_name }}
+            Version: "{{ kubernetes_version }}"
+            RoleArn: arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role
+            ResourcesVpcConfig:
+              SubnetIds:
+                - {{ public_subnets.results[0].subnet.id }}
+                - {{ public_subnets.results[1].subnet.id }}
+                - {{ private_subnets.results[0].subnet.id }}
+                - {{ private_subnets.results[1].subnet.id }}
+        EKSNodeGroup:
+          Type: AWS::EKS::Nodegroup
+          Properties:
+            ClusterName: !Ref EKSCluster
+            NodegroupName: {{ node_group_name }}
+            NodeRole: arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-node-role
+            Subnets:
+              - {{ private_subnets.results[0].subnet.id }}
+              - {{ private_subnets.results[1].subnet.id }}
+            InstanceTypes:
+              - {{ node_instance_type }}
+            ScalingConfig:
+              MinSize: {{ node_min_size }}
+              MaxSize: {{ node_max_size }}
+              DesiredSize: {{ node_desired_capacity }}
+      Outputs:
+        ClusterName:
+          Value: !Ref EKSCluster
+        ClusterEndpoint:
+          Value: !GetAtt EKSCluster.Endpoint
+  register: cf_result
 
 - name: Generate kubeconfig
   shell: aws eks update-kubeconfig --region {{ region }} --name {{ cluster_name }}
@@ -157,4 +158,5 @@
     msg:
       - "EKS Cluster: {{ cluster_name }} created successfully"
       - "Region: {{ region }}"
+      - "CloudFormation Stack: {{ cluster_name }}-stack"
       - "Kubeconfig updated at ~/.kube/config"
