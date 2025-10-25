@@ -104,6 +104,13 @@
       - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
     state: present
 
+- name: Check if EKS cluster exists
+  amazon.aws.eks_cluster_info:
+    name: "{{ cluster_name }}"
+    region: "{{ region }}"
+  register: existing_cluster
+  ignore_errors: true
+
 - name: Create EKS cluster
   shell: |
     aws eks create-cluster \
@@ -111,25 +118,33 @@
       --version {{ kubernetes_version }} \
       --role-arn arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role \
       --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }} \
-      --region {{ region }} 2>/dev/null || echo "Already exists or created"
-  register: cluster_result
+      --region {{ region }}
+  register: cluster_create_result
+  when: existing_cluster.failed
+  failed_when: 
+    - cluster_create_result.rc != 0
+    - "'already exists' not in cluster_create_result.stderr"
 
 - name: Wait for EKS cluster to be active
-  shell: |
-    for i in {1..40}; do
-      STATUS=$(aws eks describe-cluster --name {{ cluster_name }} --region {{ region }} --query 'cluster.status' --output text 2>/dev/null || echo "NOT_FOUND")
-      if [ "$STATUS" = "ACTIVE" ]; then
-        echo "Cluster is active"
-        exit 0
-      elif [ "$STATUS" = "NOT_FOUND" ]; then
-        echo "Cluster not found, waiting..."
-      else
-        echo "Cluster status: $STATUS, waiting..."
-      fi
-      sleep 30
-    done
-    echo "Timeout waiting for cluster"
-    exit 1
+  amazon.aws.eks_cluster_info:
+    name: "{{ cluster_name }}"
+    region: "{{ region }}"
+    wait: true
+    wait_condition: cluster.status == 'ACTIVE'
+    wait_timeout: 1200
+  register: cluster_info
+
+- name: Display cluster creation status
+  debug:
+    msg: "EKS Cluster {{ cluster_name }} is {{ cluster_info.cluster.status }}"
+
+- name: Check if EKS nodegroup exists
+  amazon.aws.eks_nodegroup_info:
+    name: "{{ node_group_name }}"
+    cluster_name: "{{ cluster_name }}"
+    region: "{{ region }}"
+  register: existing_nodegroup
+  ignore_errors: true
 
 - name: Create EKS node group
   shell: |
@@ -140,25 +155,26 @@
       --subnets {{ private_subnets.results[0].subnet.id }} {{ private_subnets.results[1].subnet.id }} \
       --instance-types {{ node_instance_type }} \
       --scaling-config minSize={{ node_min_size }},maxSize={{ node_max_size }},desiredSize={{ node_desired_capacity }} \
-      --region {{ region }} 2>/dev/null || echo "Already exists or created"
-  register: nodegroup_result
+      --region {{ region }}
+  register: nodegroup_create_result
+  when: existing_nodegroup.failed
+  failed_when:
+    - nodegroup_create_result.rc != 0
+    - "'already exists' not in nodegroup_create_result.stderr"
 
 - name: Wait for node group to be active
-  shell: |
-    for i in {1..40}; do
-      STATUS=$(aws eks describe-nodegroup --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }} --query 'nodegroup.status' --output text 2>/dev/null || echo "NOT_FOUND")
-      if [ "$STATUS" = "ACTIVE" ]; then
-        echo "Nodegroup is active"
-        exit 0
-      elif [ "$STATUS" = "NOT_FOUND" ]; then
-        echo "Nodegroup not found, waiting..."
-      else
-        echo "Nodegroup status: $STATUS, waiting..."
-      fi
-      sleep 30
-    done
-    echo "Timeout waiting for nodegroup"
-    exit 1
+  amazon.aws.eks_nodegroup_info:
+    name: "{{ node_group_name }}"
+    cluster_name: "{{ cluster_name }}"
+    region: "{{ region }}"
+    wait: true
+    wait_condition: nodegroup.status == 'ACTIVE'
+    wait_timeout: 1200
+  register: nodegroup_info
+
+- name: Display nodegroup creation status
+  debug:
+    msg: "EKS Nodegroup {{ node_group_name }} is {{ nodegroup_info.nodegroup.status }}"
 
 - name: Generate kubeconfig
   shell: |
@@ -166,14 +182,11 @@
   environment:
     AWS_DEFAULT_REGION: "{{ region }}"
 
-- name: Get cluster endpoint
-  shell: aws eks describe-cluster --name {{ cluster_name }} --region {{ region }} --query 'cluster.endpoint' --output text
-  register: cluster_endpoint
-
 - name: Display cluster information
   debug:
     msg:
       - "EKS Cluster Name: {{ cluster_name }}"
       - "Region: {{ region }}"
-      - "Endpoint: {{ cluster_endpoint.stdout }}"
+      - "Cluster ARN: {{ cluster_info.cluster.arn }}"
+      - "Endpoint: {{ cluster_info.cluster.endpoint }}"
       - "Kubeconfig updated at ~/.kube/config"
