@@ -124,22 +124,6 @@
   register: cluster_wait_result
   until: cluster_wait_result.rc == 0
 
-- name: Get cluster information
-  shell: aws eks describe-cluster --name {{ cluster_name }} --region {{ region }}
-  register: cluster_info_raw
-
-- name: Parse cluster info
-  set_fact:
-    cluster_info: "{{ cluster_info_raw.stdout | from_json }}"
-
-- name: Check if EKS nodegroup exists
-  amazon.aws.eks_nodegroup_info:
-    name: "{{ node_group_name }}"
-    cluster_name: "{{ cluster_name }}"
-    region: "{{ region }}"
-  register: existing_nodegroup
-  ignore_errors: true
-
 - name: Create EKS node group
   shell: |
     aws eks create-nodegroup \
@@ -151,24 +135,16 @@
       --scaling-config minSize={{ node_min_size }},maxSize={{ node_max_size }},desiredSize={{ node_desired_capacity }} \
       --region {{ region }}
   register: nodegroup_create_result
-  when: existing_nodegroup.failed
   failed_when:
     - nodegroup_create_result.rc != 0
     - "'already exists' not in nodegroup_create_result.stderr"
 
 - name: Wait for node group to be active
-  amazon.aws.eks_nodegroup_info:
-    name: "{{ node_group_name }}"
-    cluster_name: "{{ cluster_name }}"
-    region: "{{ region }}"
-    wait: true
-    wait_condition: nodegroup.status == 'ACTIVE'
-    wait_timeout: 1200
-  register: nodegroup_info
-
-- name: Display nodegroup creation status
-  debug:
-    msg: "EKS Nodegroup {{ node_group_name }} is {{ nodegroup_info.nodegroup.status }}"
+  shell: aws eks wait nodegroup-active --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }}
+  retries: 3
+  delay: 60
+  register: nodegroup_wait_result
+  until: nodegroup_wait_result.rc == 0
 
 - name: Generate kubeconfig
   shell: |
@@ -176,11 +152,15 @@
   environment:
     AWS_DEFAULT_REGION: "{{ region }}"
 
+- name: Get cluster information
+  shell: aws eks describe-cluster --name {{ cluster_name }} --region {{ region }}
+  register: cluster_info_raw
+
 - name: Display cluster information
   debug:
     msg:
       - "EKS Cluster Name: {{ cluster_name }}"
       - "Region: {{ region }}"
-      - "Cluster ARN: {{ cluster_info.cluster.arn }}"
-      - "Endpoint: {{ cluster_info.cluster.endpoint }}"
+      - "Cluster ARN: {{ (cluster_info_raw.stdout | from_json).cluster.arn }}"
+      - "Endpoint: {{ (cluster_info_raw.stdout | from_json).cluster.endpoint }}"
       - "Kubeconfig updated at ~/.kube/config"
