@@ -104,11 +104,6 @@
       - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
     state: present
 
-- name: Check if cluster exists
-  shell: aws eks describe-cluster --name {{ cluster_name }} --region {{ region }}
-  register: cluster_check
-  ignore_errors: true
-
 - name: Create EKS cluster
   shell: |
     aws eks create-cluster \
@@ -116,18 +111,12 @@
       --version {{ kubernetes_version }} \
       --role-arn arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role \
       --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }} \
-      --region {{ region }}
+      --region {{ region }} || true
   register: cluster_result
-  when: cluster_check.rc != 0
 
 - name: Wait for EKS cluster to be active
-  shell: aws eks wait cluster-active --name {{ cluster_name }} --region {{ region }}
-  when: cluster_check.rc != 0 and cluster_result.rc == 0
-
-- name: Check if nodegroup exists
-  shell: aws eks describe-nodegroup --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }}
-  register: nodegroup_check
-  ignore_errors: true
+  shell: |
+    timeout 1200 bash -c 'until aws eks describe-cluster --name {{ cluster_name }} --region {{ region }} --query "cluster.status" --output text | grep -q "ACTIVE"; do echo "Waiting for cluster..."; sleep 30; done'
 
 - name: Create EKS node group
   shell: |
@@ -138,13 +127,12 @@
       --subnets {{ private_subnets.results[0].subnet.id }} {{ private_subnets.results[1].subnet.id }} \
       --instance-types {{ node_instance_type }} \
       --scaling-config minSize={{ node_min_size }},maxSize={{ node_max_size }},desiredSize={{ node_desired_capacity }} \
-      --region {{ region }}
+      --region {{ region }} || true
   register: nodegroup_result
-  when: nodegroup_check.rc != 0
 
 - name: Wait for node group to be active
-  shell: aws eks wait nodegroup-active --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }}
-  when: nodegroup_check.rc != 0 and nodegroup_result.rc == 0
+  shell: |
+    timeout 1200 bash -c 'until aws eks describe-nodegroup --cluster-name {{ cluster_name }} --nodegroup-name {{ node_group_name }} --region {{ region }} --query "nodegroup.status" --output text | grep -q "ACTIVE"; do echo "Waiting for nodegroup..."; sleep 30; done'
 
 - name: Generate kubeconfig
   shell: |
