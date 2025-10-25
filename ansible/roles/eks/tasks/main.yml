@@ -105,7 +105,7 @@
     state: present
 
 - name: Create EKS cluster
-  amazon.aws.aws_eks_cluster:
+  amazon.aws.eks_cluster:
     name: "{{ cluster_name }}"
     version: "{{ kubernetes_version }}"
     role_arn: "arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-cluster-role"
@@ -114,13 +114,12 @@
       - "{{ public_subnets.results[1].subnet.id }}"
       - "{{ private_subnets.results[0].subnet.id }}"
       - "{{ private_subnets.results[1].subnet.id }}"
-    region: "{{ region }}"
     wait: true
     wait_timeout: 1200
   register: cluster
 
 - name: Create EKS node group
-  amazon.aws.aws_eks_nodegroup:
+  amazon.aws.eks_nodegroup:
     name: "{{ node_group_name }}"
     cluster_name: "{{ cluster_name }}"
     role_arn: "arn:aws:iam::{{ ansible_account_id }}:role/{{ cluster_name }}-node-role"
@@ -133,7 +132,6 @@
       desired_size: "{{ node_desired_capacity }}"
       max_size: "{{ node_max_size }}"
       min_size: "{{ node_min_size }}"
-    region: "{{ region }}"
     wait: true
     wait_timeout: 1200
 
