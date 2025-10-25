@@ -51,7 +51,7 @@
 
 - name: Create Elastic IP for NAT Gateway
   amazon.aws.ec2_eip:
-    domain: vpc
+    in_vpc: true
     region: "{{ region }}"
     tags:
       Name: "{{ cluster_name }}-nat-eip"
