@@ -138,6 +138,17 @@
   pause:
     seconds: 30
 
+- name: Delete failed CloudFormation stack if exists
+  amazon.aws.cloudformation:
+    stack_name: "{{ cluster_name }}-stack"
+    state: absent
+    region: "{{ region }}"
+  ignore_errors: true
+
+- name: Wait for stack deletion
+  pause:
+    seconds: 30
+
 - name: Create EKS cluster using CloudFormation
   amazon.aws.cloudformation:
     stack_name: "{{ cluster_name }}-stack"
