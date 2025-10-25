@@ -104,13 +104,6 @@
       - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
     state: present
 
-- name: Check if EKS cluster exists
-  amazon.aws.eks_cluster_info:
-    name: "{{ cluster_name }}"
-    region: "{{ region }}"
-  register: existing_cluster
-  ignore_errors: true
-
 - name: Create EKS cluster
   shell: |
     aws eks create-cluster \
@@ -120,23 +113,24 @@
       --resources-vpc-config subnetIds={{ public_subnets.results[0].subnet.id }},{{ public_subnets.results[1].subnet.id }},{{ private_subnets.results[0].subnet.id }},{{ private_subnets.results[1].subnet.id }} \
       --region {{ region }}
   register: cluster_create_result
-  when: existing_cluster.failed
   failed_when: 
     - cluster_create_result.rc != 0
     - "'already exists' not in cluster_create_result.stderr"
 
 - name: Wait for EKS cluster to be active
-  amazon.aws.eks_cluster_info:
-    name: "{{ cluster_name }}"
-    region: "{{ region }}"
-    wait: true
-    wait_condition: cluster.status == 'ACTIVE'
-    wait_timeout: 1200
-  register: cluster_info
+  shell: aws eks wait cluster-active --name {{ cluster_name }} --region {{ region }}
+  retries: 3
+  delay: 60
+  register: cluster_wait_result
+  until: cluster_wait_result.rc == 0
 
-- name: Display cluster creation status
-  debug:
-    msg: "EKS Cluster {{ cluster_name }} is {{ cluster_info.cluster.status }}"
+- name: Get cluster information
+  shell: aws eks describe-cluster --name {{ cluster_name }} --region {{ region }}
+  register: cluster_info_raw
+
+- name: Parse cluster info
+  set_fact:
+    cluster_info: "{{ cluster_info_raw.stdout | from_json }}"
 
 - name: Check if EKS nodegroup exists
   amazon.aws.eks_nodegroup_info:
